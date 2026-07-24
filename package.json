@@ -1,0 +1,13 @@
+{
+  "name": "turbo-racer-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot that launches a Turbo Racer HTML5 game as a Web App",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.16.3",
+    "dotenv": "^16.4.5"
+  }
+}

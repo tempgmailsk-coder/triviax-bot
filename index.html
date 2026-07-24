@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Turbo Racer</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: #0d0d12;
+    --road: #24242c;
+    --line: #f4c542;
+    --accent: #ff4d4d;
+    --accent2: #4dc9ff;
+    --text: #f2f2f2;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; background: var(--bg);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    overscroll-behavior: none; touch-action: none; color: var(--text);
+  }
+  #wrap {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100%; width: 100%; position: relative;
+  }
+  #hud {
+    position: absolute; top: 12px; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: center; padding: 0 16px;
+    font-weight: 700; font-size: 18px; z-index: 5; pointer-events: none;
+    text-shadow: 0 1px 3px rgba(0,0,0,.6);
+  }
+  #statusIcons {
+    display: flex; gap: 8px; font-size: 20px; min-height: 24px;
+  }
+  #statusIcons span { opacity: .95; }
+  canvas {
+    background: var(--road);
+    border-radius: 12px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.5);
+    touch-action: none;
+    max-height: 100vh;
+    max-width: 100vw;
+  }
+  #overlay {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px;
+    background: rgba(10,10,14,.82); z-index: 10; text-align: center; padding: 24px;
+  }
+  #overlay h1 { margin: 0; font-size: 28px; letter-spacing: 1px; }
+  #overlay p { margin: 0; opacity: .8; font-size: 14px; max-width: 280px; }
+  button {
+    background: linear-gradient(135deg, var(--accent2), #2b8fd6);
+    color: #fff; border: none; padding: 12px 28px; border-radius: 999px;
+    font-size: 16px; font-weight: 700; cursor: pointer;
+  }
+  button:active { transform: scale(0.97); }
+  .hidden { display: none !important; }
+  #controls {
+    position: absolute; bottom: 14px; left: 0; right: 0;
+    display: flex; justify-content: space-between; padding: 0 20px; z-index: 5;
+  }
+  .ctrlBtn {
+    width: 64px; height: 64px; border-radius: 50%;
+    background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.25);
+    color: #fff; font-size: 26px; display: flex; align-items: center; justify-content: center;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="hud">
+    <div>SCORE <span id="score">0</span></div>
+    <div id="statusIcons"></div>
+    <div>BEST <span id="best">0</span></div>
+  </div>
+  <canvas id="game" width="360" height="600"></canvas>
+
+  <div id="controls">
+    <div class="ctrlBtn" id="btnLeft">◀</div>
+    <div class="ctrlBtn" id="btnRight">▶</div>
+  </div>
+
+  <div id="overlay">
+    <h1>🏁 TURBO RACER</h1>
+    <p>Swipe or tap left/right (or arrow keys) to dodge traffic. Grab 🪙 coins for points, ⚡ for a speed boost, 🛡️ for a one-hit shield.</p>
+    <button id="startBtn">START RACE</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  const tg = window.Telegram?.WebApp;
+  if (tg) { tg.ready(); tg.expand(); }
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const overlay = document.getElementById('overlay');
+  const startBtn = document.getElementById('startBtn');
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const statusIconsEl = document.getElementById('statusIcons');
+
+  const LANES = 3;
+  const laneWidth = canvas.width / LANES;
+  const carW = 46, carH = 78;
+
+  let best = Number(localStorage.getItem('turboRacerBest') || 0);
+  bestEl.textContent = best;
+
+  let state = 'idle'; // idle | playing | over
+  let playerLane = 1;
+  let playerX = laneWidth * playerLane + laneWidth / 2 - carW / 2;
+  let obstacles = [];
+  let pickups = [];
+  let roadOffset = 0;
+  let baseSpeed = 4;
+  let speed = 4;
+  let score = 0;
+  let spawnTimer = 0;
+  let pickupTimer = 0;
+  let lastTime = 0;
+
+  let shieldActive = false;
+  let boostTimeLeft = 0;   // ms remaining of active boost
+  const BOOST_DURATION = 4000;
+  const BOOST_MULTIPLIER = 1.8;
+  const PICKUP_SIZE = 34;
+
+  function resetGame() {
+    playerLane = 1;
+    playerX = laneWidth * playerLane + laneWidth / 2 - carW / 2;
+    obstacles = [];
+    pickups = [];
+    roadOffset = 0;
+    baseSpeed = 4;
+    speed = 4;
+    score = 0;
+    spawnTimer = 0;
+    pickupTimer = 900;
+    shieldActive = false;
+    boostTimeLeft = 0;
+    scoreEl.textContent = 0;
+    updateStatusIcons();
+  }
+
+  function updateStatusIcons() {
+    let icons = '';
+    if (shieldActive) icons += '<span title="Shield">🛡️</span>';
+    if (boostTimeLeft > 0) icons += '<span title="Boost">⚡</span>';
+    statusIconsEl.innerHTML = icons;
+  }
+
+  function laneCenterX(lane) {
+    return laneWidth * lane + laneWidth / 2 - carW / 2;
+  }
+
+  function drawCar(x, y, color, w = carW, h = carH) {
+    ctx.save();
+    ctx.fillStyle = color;
+    roundRect(x, y, w, h, 10);
+    ctx.fill();
+    // windshield
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    roundRect(x + w * 0.15, y + h * 0.12, w * 0.7, h * 0.28, 6);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawPickup(p) {
+    ctx.save();
+    const cx = p.x + PICKUP_SIZE / 2;
+    const cy = p.y + PICKUP_SIZE / 2;
+    const r = PICKUP_SIZE / 2;
+
+    if (p.type === 'coin') {
+      ctx.fillStyle = '#ffd54d';
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#8a6d00';
+      ctx.font = 'bold 18px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('$', cx, cy + 1);
+    } else if (p.type === 'boost') {
+      ctx.fillStyle = 'rgba(77,201,255,0.25)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#4dc9ff';
+      ctx.font = 'bold 20px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('⚡', cx, cy + 1);
+    } else if (p.type === 'shield') {
+      ctx.fillStyle = 'rgba(124,255,77,0.25)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#7cff4d';
+      ctx.font = 'bold 18px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('🛡', cx, cy + 1);
+    }
+    ctx.restore();
+  }
+
+  function drawRoad() {
+    ctx.fillStyle = '#24242c';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.strokeStyle = 'rgba(244,197,66,0.8)';
+    ctx.lineWidth = 4;
+    ctx.setLineDash([26, 22]);
+    for (let l = 1; l < LANES; l++) {
+      const x = laneWidth * l;
+      ctx.beginPath();
+      ctx.lineDashOffset = -roadOffset;
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, canvas.height);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // side barriers
+    ctx.fillStyle = '#3a3a44';
+    ctx.fillRect(0, 0, 6, canvas.height);
+    ctx.fillRect(canvas.width - 6, 0, 6, canvas.height);
+  }
+
+  function spawnObstacle() {
+    const lane = Math.floor(Math.random() * LANES);
+    const colors = ['#ff4d4d', '#4dc9ff', '#7cff4d', '#ffb347'];
+    obstacles.push({
+      lane,
+      x: laneCenterX(lane),
+      y: -carH,
+      color: colors[Math.floor(Math.random() * colors.length)]
+    });
+  }
+
+  function spawnPickup() {
+    const lane = Math.floor(Math.random() * LANES);
+    const roll = Math.random();
+    // Coins are common, boost/shield are rarer
+    const type = roll < 0.6 ? 'coin' : roll < 0.85 ? 'boost' : 'shield';
+    const x = laneWidth * lane + laneWidth / 2 - PICKUP_SIZE / 2;
+    pickups.push({ lane, x, y: -PICKUP_SIZE, type });
+  }
+
+  function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+    return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+  }
+
+  function update(dt) {
+    baseSpeed += 0.0025; // gradual difficulty ramp
+
+    if (boostTimeLeft > 0) {
+      boostTimeLeft -= dt;
+      if (boostTimeLeft < 0) boostTimeLeft = 0;
+      speed = baseSpeed * BOOST_MULTIPLIER;
+      if (boostTimeLeft === 0) updateStatusIcons();
+    } else {
+      speed = baseSpeed;
+    }
+
+    roadOffset += speed;
+    const scoreMultiplier = boostTimeLeft > 0 ? 2 : 1;
+
+    spawnTimer -= dt;
+    const spawnEvery = Math.max(420, 900 - speed * 20);
+    if (spawnTimer <= 0) {
+      spawnObstacle();
+      spawnTimer = spawnEvery;
+    }
+
+    pickupTimer -= dt;
+    if (pickupTimer <= 0) {
+      spawnPickup();
+      pickupTimer = 1400 + Math.random() * 900;
+    }
+
+    const playerY = canvas.height - carH - 24;
+
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      const o = obstacles[i];
+      o.y += speed;
+      if (o.y > canvas.height) {
+        obstacles.splice(i, 1);
+        score += 1 * scoreMultiplier;
+        scoreEl.textContent = score;
+        continue;
+      }
+      if (rectsOverlap(playerX, playerY, carW, carH, o.x, o.y, carW, carH)) {
+        if (shieldActive) {
+          shieldActive = false;
+          updateStatusIcons();
+          obstacles.splice(i, 1);
+        } else {
+          endGame();
+          return;
+        }
+      }
+    }
+
+    for (let i = pickups.length - 1; i >= 0; i--) {
+      const p = pickups[i];
+      p.y += speed;
+      if (p.y > canvas.height) {
+        pickups.splice(i, 1);
+        continue;
+      }
+      if (rectsOverlap(playerX, playerY, carW, carH, p.x, p.y, PICKUP_SIZE, PICKUP_SIZE)) {
+        pickups.splice(i, 1);
+        if (p.type === 'coin') {
+          score += 10 * scoreMultiplier;
+          scoreEl.textContent = score;
+        } else if (p.type === 'boost') {
+          boostTimeLeft = BOOST_DURATION;
+        } else if (p.type === 'shield') {
+          shieldActive = true;
+        }
+        updateStatusIcons();
+      }
+    }
+  }
+
+  function render() {
+    drawRoad();
+    for (const o of obstacles) drawCar(o.x, o.y, o.color);
+    for (const p of pickups) drawPickup(p);
+
+    const playerY = canvas.height - carH - 24;
+    if (shieldActive) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(124,255,77,0.9)';
+      ctx.lineWidth = 3;
+      roundRect(playerX - 4, playerY - 4, carW + 8, carH + 8, 12);
+      ctx.stroke();
+      ctx.restore();
+    }
+    drawCar(playerX, playerY, boostTimeLeft > 0 ? '#dff6ff' : '#ffffff');
+  }
+
+  function loop(ts) {
+    if (state !== 'playing') return;
+    const dt = ts - lastTime || 16;
+    lastTime = ts;
+    update(dt);
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  function startGame() {
+    resetGame();
+    state = 'playing';
+    overlay.classList.add('hidden');
+    lastTime = 0;
+    requestAnimationFrame(loop);
+  }
+
+  function endGame() {
+    state = 'over';
+    if (score > best) {
+      best = score;
+      localStorage.setItem('turboRacerBest', String(best));
+      bestEl.textContent = best;
+    }
+    overlay.querySelector('h1').textContent = '💥 CRASHED';
+    overlay.querySelector('p').textContent = `Score: ${score}  •  Best: ${best}`;
+    startBtn.textContent = 'RACE AGAIN';
+    overlay.classList.remove('hidden');
+
+    // Send result back to the Telegram bot
+    if (tg) {
+      try {
+        tg.sendData(JSON.stringify({ score, best }));
+      } catch (e) { /* not launched inside Telegram */ }
+    }
+  }
+
+  function moveLane(delta) {
+    if (state !== 'playing') return;
+    playerLane = Math.min(LANES - 1, Math.max(0, playerLane + delta));
+    playerX = laneCenterX(playerLane);
+  }
+
+  startBtn.addEventListener('click', startGame);
+  document.getElementById('btnLeft').addEventListener('click', () => moveLane(-1));
+  document.getElementById('btnRight').addEventListener('click', () => moveLane(1));
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') moveLane(-1);
+    if (e.key === 'ArrowRight') moveLane(1);
+  });
+
+  // swipe controls
+  let touchStartX = null;
+  canvas.addEventListener('touchstart', (e) => { touchStartX = e.touches[0].clientX; });
+  canvas.addEventListener('touchend', (e) => {
+    if (touchStartX == null) return;
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    if (Math.abs(dx) > 30) moveLane(dx > 0 ? 1 : -1);
+    touchStartX = null;
+  });
+
+  render(); // draw idle road behind overlay
+})();
+</script>
+</body>
+</html>
